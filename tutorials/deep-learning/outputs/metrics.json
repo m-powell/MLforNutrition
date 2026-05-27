@@ -1,0 +1,31 @@
+{
+  "metrics": {
+    "MAE": 8.862362480163576,
+    "RMSE": 12.407985424690958,
+    "R2": 0.23517487264958215,
+    "MedianAE": 6.450969696044922
+  },
+  "feature_cols": [
+    "SEQN",
+    "cycle_begin_year",
+    "age",
+    "bp_sys",
+    "bp_di",
+    "weight",
+    "height",
+    "bmi",
+    "waist",
+    "kcal",
+    "protein",
+    "sugar",
+    "carb",
+    "fat_total",
+    "fat_sat",
+    "fat_mon",
+    "fat_poly",
+    "hdl",
+    "triglycerides"
+  ],
+  "n_train": 13848,
+  "n_test": 2968
+}

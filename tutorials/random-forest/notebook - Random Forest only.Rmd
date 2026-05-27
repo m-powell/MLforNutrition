@@ -1,0 +1,226 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Introduction
+
+Suppose our data set contains multiple descriptors about some type of object (e.g., statistics for individual baseball players or triage data for medical patients). We can incorporate this data to make a prediction about one of the particular variables via tree-based methods.
+
+Ultimately, tree-based methods create a model which classifies a new object's response variable according to partitioning-decisions of the predictor variables. For example, suppose we have ten entities, each with distinct values for five different predictors
+
+$$P_i=\{a_i,b_i,c_i,d_i,e_i\},\  \ i \in \{1,2,...,10\}$$
+
+and we want to use this data to predict $e_{11}$ for a new entity $P_{11}=\{a_{11},b_{11},c_{11},d_{11},e_{11}\}$. We will train a model with $P_1$ through $P_{10}$ using only the measurement subset $\{a_i,b_i,c_i,d_i\}$ to predict the classification of their $e_i$ values. We will naturally incur error, especially with such a small population, but we'll try to minimize this error as we develop our tree-based methods. Based on the model we create with the first ten $P$ entities, we will feed $P_{11}$'s $a_{11}$ through $d_{11}$ in and state, with a certain level of confidence, the classification of $e_{11}$.
+
+```{r necessary_packages, echo=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+library(foreign)
+library(tidyverse)
+library(janitor)
+library(tree)
+library(randomForest)
+
+df_clean <- read.csv("TBOSdataframe.csv")
+```
+
+# Basic Decision Trees
+
+We now discuss the creation of trees and how we use them to predict response variables.
+
+### Regression and Classification Trees
+
+Regression and classification trees are used to predict quantitative and qualitative responses, respectively. Both fundamentally rely on binary splitting on predictor variables.
+
+Regression trees want to minimize the residual sum of squares when determining predictor variables to use and on what values to split them. Classification trees have the same minimization consideration, but instead of residual sum of squares use *classification error rate*, the *Gini index*, or *entropy*. Mathematically the Gini index is
+
+$$\sum_{k=1}^{K} \hat{p}_{mk}(1-\hat{p}_{mk})$$
+
+where $\hat{p}$ is a proportion. The leaves of the tree are the assignment of the new observation's response variable based on the measurement of its predictor variables at each node split. For each of the *m* leaf nodes, we denote the partitioning of the feature-space (i.e., a group of observations with fairly similar data measures and therefore same predictor variable value) $R_m$. At each node split in the tree, an observation is sent towards a final $R_m$ by the classification of one of its $k$ predictor variables (there are $K$ total predictor variables). 
+
+During this process, two patients $i$ and $j$ with a predictor variable $b_i$ and $b_j$ which the tree would classify the same way may wind up in different feature-space partitions $R_i$ and $R_j$. This occurs, for example, because patients $i$ and $j$ went down different paths in the tree based on the values of the $a_i$ and $b_i$ predictor variables. The generic predictor variables $a$ and $b$ are two of the classes from the set of $K$ total predictor variables. The Gini index makes note of this for $k=b$ since there are patients with a specific classification of $b$ in multiple $R_m$ partitions.
+
+*Important note for processing all tree visualizations*: after each split node, movement to the left equates to a "yes" classification for the node split condition; movement to the right equates to a "no."
+
+Let's create a classification tree from our data for extreme blood pressure.
+
+```{r classification_tree, echo=TRUE, include=TRUE, warning=FALSE, message=FALSE}
+#use this to figure out what variable names you want to keep from the main data frame
+#variable.names(final) %>% dput()
+
+names_temp = c("age", "weight", "height", "bmi", "waist", "kcal", "protein", "sugar", "carb",
+               "fat_total", "fat_sat", "fat_mon", "fat_poly", "hdl", "glucose", "triglycerides",
+               "gender","bp_sys","bp_di")
+df_tree<-df_clean[,names_temp]
+
+attach(df_tree)
+
+extreme_bp <- factor(ifelse((extreme_bp = bp_sys >= 130 | bp_di >= 80),"YES","NO"))
+df_tree <- data.frame(df_tree, extreme_bp)
+
+#remove "bp_sys" and "bp_di" since we used them to create "extreme_bp" (which is added)
+names_temp = c("age", "weight", "height", "bmi", "waist", "kcal", "protein", "sugar", "carb",
+               "fat_total", "fat_sat", "fat_mon", "fat_poly", "hdl", "glucose", "triglycerides",
+               "gender","extreme_bp")
+df_extreme.bp<-df_tree[,names_temp]
+
+tree.df_extreme.bp <- tree(extreme_bp ~ . , df_extreme.bp)
+plot(tree.df_extreme.bp)
+text(tree.df_extreme.bp, pretty=0, splits=TRUE)
+```
+
+
+Since age is the first node split, the algorithm found it had the most minimizing impact on the Gini index value at that step of all variables. Subsequently, BMI and then age (again) were next. Interstingly, the BMI split leads to "no" either way; this occurs because the partitioning further decreased the Gini index. For those between 36.5 and 49.5 years of age, the model recommends looking at triglyceride levels. The model found none of the other predictor variables had a significant impact on the response variable.
+
+### Prediction
+
+Now it's time to create a model to predict; we'll stick with extreme blood pressure. Our initial method will be to split our primary data frame into train and test sets.
+
+```{r predicting, echo=TRUE, include=TRUE, warning=FALSE}
+set.seed(2)
+
+training_percentage = 0.8
+
+#get indices of training data
+train <- sample(1:nrow(df_extreme.bp),training_percentage*nrow(df_extreme.bp))
+
+#create test set which excludes the training indices
+df_extreme.bp.test <- df_extreme.bp[-train,]
+
+extreme_bp.test <- extreme_bp[-train]
+
+tree.train <- tree(extreme_bp ~ . , df_extreme.bp, subset=train)
+tree.pred <- predict(tree.train, df_extreme.bp.test, type="class")
+
+#confusion matrix
+table(tree.pred, extreme_bp.test)
+#accuracy
+(table(tree.pred, extreme_bp.test)[1]+table(tree.pred, extreme_bp.test)[4])/sum(table(tree.pred, extreme_bp.test)) 
+```
+
+In the confusion matrix we see 49 and 91 type I and II errors, respectively; the accuracy of our predictions for this test set is 68.95787%.
+
+We can also use cross-fold validation with cost-complexity pruning in an attempt to pit accuracy and computational cost against each other. Cost-complexity pruning minimizes the objective function
+
+$$\sum_{m=1}^{|T|} \sum_{i: x_i \in R_m} (y_i-\hat{y}_{R_m})^2+\alpha|T|$$
+
+where $\alpha$ is a non-negative tuning parameter and index associated with a specific tree chosen due to its minimal contribution to the objective function. Once our large tree is constructed as previously done, we can use the progressive build-up of the objective function and, beginning at the bottom of the tree, deliberately exclude certain node splits with knowledge of the trade-off of accuracy with simplicity.
+
+```{r predicting_with_cross_validation, echo=TRUE, include=TRUE, warning=FALSE}
+set.seed(7)
+
+cv.df_extreme.bp <- cv.tree(tree.df_extreme.bp, FUN = prune.misclass)
+
+par(mfrow = c(1, 2))
+plot(cv.df_extreme.bp$size , cv.df_extreme.bp$dev, type = "b")
+plot(cv.df_extreme.bp$k, cv.df_extreme.bp$dev, type = "b")
+```
+
+In the left plot, we see the number of cross-validation errors decreases as the tree size approaches three node splits before slightly increasing. In the right plot, *k* is $\alpha$ from the cost-complexity pruning objective function above; as the model includes more sub-trees branching off node splits, the cross-validation error increases. Since trees of both three and four leaf nodes produce similar low values of error, we can reduce the complexity of our model by retroactively pruning the unnecessary splits.
+
+```{r pruning_the_tree, echo=TRUE, include=TRUE, warning=FALSE}
+prune.df_extreme.bp <- prune.misclass(tree.df_extreme.bp, best = 3)
+plot(prune.df_extreme.bp)
+text(prune.df_extreme.bp, pretty = 0)
+
+tree.pred <- predict(prune.df_extreme.bp, df_extreme.bp.test, type = "class")
+
+#confusion matrix
+table(tree.pred , extreme_bp.test)
+#accuracy
+(table(tree.pred, extreme_bp.test)[1]+table(tree.pred, extreme_bp.test)[4])/sum(table(tree.pred, extreme_bp.test)) 
+```
+
+We see our predicting accuracy increases slightly from 69.40133%.
+
+### Summary of Trees
+
+Advantages of trees are:
+
+* trees are easily explainable;
+* trees generally mirror human decision-making processes;
+* trees are well-suited for display and, generally, are easily interpretable;
+* trees can account for qualitative predictors;
+
+Disadvantages, however, include:
+
+* trees generally lack predictive accuracy of other methods;
+* tree generation may be mathematically chaotic
+
+# Ensemble Methods
+
+With the basics of trees complete, we now turn up the complexity slightly. Ensemble methods take many trees into account to create a "better" tree.
+
+### Bootstrap Aggregation (Bagging)
+
+The idea of bootstrap aggregation is to create multiple trees from our training data via bootstrapping and then take the "average" of these trees as our final predictive model. For quantitative node splits, the notion of average is straight-forward. For qualitative node splits, we can simply apply a majority vote.
+
+```{r bagging1, echo=TRUE, include=TRUE}
+set.seed(1)
+
+bag.df_extreme.bp <- randomForest(extreme_bp ~ ., data = df_extreme.bp, subset = train, 
+                                  mtry=17, importance =TRUE)
+
+print(bag.df_extreme.bp)
+```
+
+The *mtry* parameter in the *random_forest* function specifies how many predictor variables should be considered. We can look at a few more details of this model
+
+```{r bagging1_test_set, echo=TRUE, include=TRUE}
+yhat.bag <- predict(bag.df_extreme.bp, newdata=df_extreme.bp[-train,])
+
+#confusion matrix
+table(yhat.bag, extreme_bp.test)
+#accuracy
+(table(yhat.bag, extreme_bp.test)[1]+table(yhat.bag, extreme_bp.test)[4])/sum(table(yhat.bag, extreme_bp.test)) 
+```
+
+We observe the out-of-bag (OOB) error rate is 31.71%. Out-of-bag simply means observations not used during the boost aggregation model build. This value is exactly one minus the accuracy. Additionally, we see 500 trees were created and then "averaged" to create the final model with an accuracy of 70.29%. We reduce the number of trees in the next block of code.
+
+```{r bagging2, echo=TRUE, include=TRUE}
+bag.df_extreme.bp <- randomForest(extreme_bp ~ ., data = df_extreme.bp, subset = train, 
+                                  mtry=17, ntree = 25)
+
+yhat.bag <- predict(bag.df_extreme.bp, newdata=df_extreme.bp[-train,])
+
+#confusion matrix
+table(yhat.bag, extreme_bp.test)
+#accuracy
+(table(yhat.bag, extreme_bp.test)[1]+table(yhat.bag, extreme_bp.test)[4])/sum(table(yhat.bag, extreme_bp.test))
+```
+We obtain a slightly worse accuracy rate using 25 instead of 500 trees.
+
+### Random Forests
+
+Random forests are procedurally very similar to bootstrap aggregation. The key difference lies in the choice of predictor variables for node splits. 
+
+In bootstrap aggregation, there is a possibility that some of the trees created are very similar (or even match exactly). This influences the "average" tree slightly towards them; even more so if the same/similar tree appears many times. Random forests reduce the likelihood of this occurrence by choosing a subset of the predictor variables which may be considered as candidates for the next node split. This process *decorrelates* the trees of this ensemble method.
+
+```{r random_forest, echo=TRUE, include=TRUE}
+set.seed(1)
+
+rf.df_extreme.bp <- randomForest(extreme_bp ~ ., data = df_extreme.bp, subset = train, 
+                                 mtry=9, importance =TRUE, ntree=500)
+
+yhat.rf <- predict(rf.df_extreme.bp, newdata=df_extreme.bp[-train,])
+
+#confusion matrix
+table(yhat.rf, extreme_bp.test)
+#accuracy
+(table(yhat.rf, extreme_bp.test)[1]+table(yhat.rf, extreme_bp.test)[4])/sum(table(yhat.rf, extreme_bp.test))
+```
+
+The accuracy is slightly less than the 500-tree bagging method. 
+
+The *random_forest* package allows us to look at the importance of the predictor variables in the final model in order of consideration. For both bootstrap aggregation and random forests, we lose some ability to interpret of the model since we are taking the average tree, despite a potential increase in our predictive accuracy. However, the importance of the nodes with the residual sum of squares (regression trees) and Gini index (classification trees) values. This assessment of importance is called *variable importance*.
+
+```{r random_forest_plots1, echo=TRUE, include=TRUE}
+importance(rf.df_extreme.bp)
+```
+
+The "mean decrease accuracy" column shows the negative effect of placing the predictor variable somewhere else within the final model. The "mean decrease Gini" column indicates the average effect, across all generated trees, the predictor variable had in the reduction of the Gini index. The following plot visualizes this information:
+
+```{r random_forest_plots2, echo=TRUE, include=TRUE}
+varImpPlot(rf.df_extreme.bp)
+```

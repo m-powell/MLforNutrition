@@ -1,0 +1,52 @@
+# NHANES glucose prediction pipeline configuration
+# Third parties can edit this file to reproduce or vary results.
+
+# --- Data ---
+data_path: "nhanes_1999_2018_yayhoo_fasting_diet_imputed.csv"
+target_col: "glucose"
+# Explicit feature list (optional). If empty and use_statistical_significance_filter is false,
+# all candidate numeric columns (excluding target) are used.
+feature_cols: []
+
+# --- Statistical significance filtering (optional)
+# When true: keep only features with p < feature_selection_p_value_threshold (may dramatically reduce features).
+# When false: use feature_cols from above or all candidate features.
+use_statistical_significance_filter: false
+feature_selection_p_value_threshold: 0.1  # p < 0.1 when filter is enabled
+
+# --- Splits ---
+train_size: 0.7
+val_size: 0.15
+test_size: 0.15
+random_state: 42
+
+# --- Preprocessing (second pass) ---
+# Scaler: standard (StandardScaler only; no PCA/KMeans in this pipeline)
+scaler: "standard"
+# Remove rows in top/bottom percentile of target (glucose). Default 5% each tail.
+target_trim_lower_percentile: 0.05
+target_trim_upper_percentile: 0.95
+imputation: "median"  # median | mean | constant
+
+# --- Neural network defaults ---
+nn:
+  epochs: 200
+  batch_size: 256
+  lr: 0.0015
+  weight_decay: 0.0002
+  patience: 30
+  dropout: 0.1
+  num_layers: 2
+  layer_width: 32
+  architecture_pattern: "constant"  # constant | pyramid | funnel
+  activation: "relu"  # relu | tanh | leaky_relu | elu
+
+# --- Hyperparameter optimization ---
+# none: use NN defaults above. optuna: run Optuna search then train with best params. automl: reserved for future.
+use_hyperparameter_optimization: "none"
+optuna:
+  n_trials: 30
+  timeout: 600  # seconds
+
+# --- Output ---
+output_dir: "outputs"

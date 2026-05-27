@@ -1,0 +1,11 @@
+Test set results
+======================
+Metric       Value  
+MAE          8.8619 
+RMSE         12.4080
+R2           0.2352 
+MedianAE     6.4607 
+n_train      13848  
+n_test       2968   
+n_features   19     
+======================

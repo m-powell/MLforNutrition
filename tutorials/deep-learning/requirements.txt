@@ -1,0 +1,12 @@
+# Minimal deps for NHANES glucose NN pipeline (no Streamlit, Plotly, SHAP, Ollama)
+torch>=2.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+scipy>=1.10.0
+pyyaml>=6.0
+matplotlib>=3.7.0
+# Optional: hyperparameter optimization
+optuna>=3.0.0
+# For appending tutorial to Word document
+python-docx>=0.8.11

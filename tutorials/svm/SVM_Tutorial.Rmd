@@ -1,0 +1,365 @@
+---
+title: "SVM Tutorial NHANES"
+author: "Hayden Deverill"
+date: "2024-12-05"
+output: html_document
+---
+
+# Introduction
+
+In this tutorial, we will use **Support Vector Machines (SVM)** to predict extreme blood pressure (a binary outcome) using data from the **NHANES dataset**. The workflow includes:
+
+1.  Loading necessary packages and data.
+2.  Preprocessing and cleaning the data.
+3.  Feature selection for identifying important predictors.
+4.  Training and evaluating an SVM classifier.
+5.  Visualizing the SVM decision boundary.
+
+------------------------------------------------------------------------
+
+# Load Required Packages
+
+We start by loading the necessary R packages. Each package is labeled with its purpose to maintain clarity.
+
+```{r results='hide',warning=FALSE,message=FALSE}
+# Load necessary packages
+library(randomForest)   # Feature selection
+library(e1071)          # SVM model
+library(tidyverse)      # Data manipulation
+library(caret)          # Data splitting and feature selection
+```
+
+------------------------------------------------------------------------
+
+# Load the Data
+
+We load the **NHANES Nutrition Data** and perform a quick inspection of its structure and contents.
+
+```{r}
+# Load and inspect the data
+data <- read_csv("C:/Users/hayden.deverill/OneDrive - West Point/Sarah Booth Paper/Data/NHANES Data/Nutrition Data from NHANES.csv")
+
+# Display the first few rows of the data
+head(data)
+```
+
+------------------------------------------------------------------------
+
+# Data Preprocessing
+
+## Convert Categorical Variables to Factors
+
+```{r}
+# Convert categorical variables to factors
+data$med_hbp <- as.factor(data$med_hbp)
+data$med_chol <- as.factor(data$med_chol)
+data$extreme_bp <- as.factor(data$extreme_bp)
+data$extreme_waist <- as.factor(data$extreme_waist)
+data$extreme_hdl <- as.factor(data$extreme_hdl)
+data$extreme_tri <- as.factor(data$extreme_tri)
+data$extreme_glu <- as.factor(data$extreme_glu)
+data$metsyn <- as.factor(data$metsyn)
+```
+
+## Clean and Prepare the Dataset
+
+```{r}
+# Rename 'gender' to 'sex' and convert it to a factor
+data$sex <- as.factor(data$gender)
+
+# Remove 'gender' column
+data <- data %>% select(-gender)
+
+# Remove rows with missing values
+data <- na.omit(data)
+
+# Display a summary of selected features
+summary(data[, c("age", "bmi", "sex", "carb", "fat_total", "protein", "extreme_bp")])
+```
+
+------------------------------------------------------------------------
+
+# Splitting the Data into Training and Testing Sets
+
+We split the data into **80% training** and **20% testing**.
+
+```{r}
+# Split the data
+set.seed(123) # for reproducibility
+trainIndex <- createDataPartition(data$bp_sys, p = 0.8, list = FALSE)
+train_data <- data[trainIndex, ]
+test_data <- data[-trainIndex, ]
+```
+
+------------------------------------------------------------------------
+
+# Standardize the Data
+
+Standardization is crucial for SVM because it relies on distance-based optimization. We calculate the mean and standard deviation from the training data and scale both the training and test datasets accordingly.
+
+```{r}
+# Identify numeric and non-numeric features
+numeric_features <- train_data[sapply(train_data, is.numeric)] %>% colnames()
+non_numeric_features <- train_data[sapply(train_data, is.factor)] %>% colnames()
+
+# Compute mean and SD of numeric features in the training set
+train_mean <- colMeans(train_data[numeric_features])
+train_sd <- apply(train_data[numeric_features], 2, sd)
+
+# Scale the training and test datasets
+train_scaled <- scale(train_data[numeric_features], center = train_mean, scale = train_sd)
+test_scaled <- scale(test_data[numeric_features], center = train_mean, scale = train_sd)
+
+# Combine scaled numeric and non-numeric columns
+train_data_scaled <- cbind(train_scaled, train_data[non_numeric_features])
+test_data_scaled <- cbind(test_scaled, test_data[non_numeric_features])
+```
+
+The final output are the `train_data_scaled` and `test_data_scaled` data sets that are preprocessed to use with the SVM model.
+
+------------------------------------------------------------------------
+
+# Feature Selection
+
+## Using Random Forest to Identify Important Features
+
+Random forest is an ensemble method that builds multiple decision trees during training. Each tree is built using a random subset of predictors (a process called feature bagging), which helps reduce overfitting and increases model robustness.
+
+The random forest's internal mechanism calculates variable importance based on how much each feature contributes to reducing impurity (e.g., Gini index for classification or residual sum of squares for regression).
+
+```{r}
+# Train a random forest model for feature selection
+set.seed(7)
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+model <- train(extreme_bp ~ ., 
+               data = data %>% select(-c(bp_sys, bp_di)), #bp_sys and bp_di are correlated to extreme_bp
+               method = "rf", 
+               preProcess = c("center", "scale"), 
+               trControl = control)
+
+# Display the model and variable importance
+print(model)
+importance <- varImp(model, scale = FALSE)
+print(importance)
+plot(importance)
+```
+
+Using the **random forest** feature selection method, the five most important features are:
+
+1.  metsynTRUE
+2.  height
+3.  weight
+4.  triglycerides
+5.  protein
+
+## Recursive Feature Elimination (RFE)
+
+Recursive Feature Elimination (RFE) method is a systematic approach to feature selection. It iteratively trains models while removing less important features based on some criterion, identifying the subset of predictors that leads to the best model performance.
+
+```{r}
+# Recursive Feature Elimination (RFE)
+set.seed(7)
+control <- rfeControl(functions = rfFuncs, method = "cv", number = 10)
+results <- rfe(data[, c(1:3, 6:22, 24:29)], data$extreme_bp, sizes = c(1:8), rfeControl = control)
+
+# Display chosen features
+print(results)
+predictors(results)
+plot(results, type = c("g", "o"))
+```
+
+Using the **RFE** feature selection method, the five most important features are:
+
+1.  metsynTRUE
+2.  height
+3.  weight
+4.  fat_mon
+5.  hdl
+
+Overall, we see that both methods had metsynTRUE, height, and weight as the top three most important features. However, the fourth and fifth most important features for each respective method were different.
+
+# Train the SVM Classifier
+
+We use the SVM model with a **linear kernel** and specific input variables to predict extreme blood pressure.
+
+We chose to fit the model using the following variables based on both the feature importance and subject matter expert opinion:
+
+1.  height
+2.  weight
+3.  triglycerides
+4.  waist
+5.  protein
+6.  age
+7.  glucose
+
+```{r}
+# Train the SVM model
+set.seed(123)
+svm_model <- svm(extreme_bp ~ height + weight + triglycerides + waist + protein + age + glucose, 
+                 data = train_data_scaled, 
+                 kernel = "linear", 
+                 scale = TRUE, 
+                 cost = 10)
+
+# Print model summary
+print(svm_model)
+```
+
+------------------------------------------------------------------------
+
+# Evaluate the Model
+
+Finally, we test the model on unseen data and calculate performance metrics.
+
+```{r}
+# Predict on test data
+test_predictions <- predict(svm_model, test_data_scaled)
+
+# Generate a confusion matrix
+confusion <- confusionMatrix(test_predictions, test_data_scaled$extreme_bp, positive = "TRUE")
+
+# Print confusion matrix
+print(confusion)
+```
+
+We see that the accuracy is **62.86%** as a result of using this model.
+
+# Visualize SVM Decision Boundary
+
+## Train the SVM Classifier (Height and Weight Only)
+
+We use the SVM model with a **linear kernel** using height and weight to predict extreme blood pressure to effectively visualize the decision boundary on a 2 dimensional space.
+
+```{r}
+# Train the SVM model
+svm_model2 <- svm(extreme_bp ~ height + weight, 
+                 data = train_data_scaled, 
+                 kernel = "linear",
+                 scale = TRUE,
+                 cost = 10)
+
+# Print model summary
+print(svm_model2)
+```
+
+## Evaluate the Model
+
+Finally, we test the model on unseen data and calculate performance metrics.
+
+```{r}
+# Predict on test data
+predictions2 <- predict(svm_model2, test_data_scaled)
+
+# Generate a confusion matrix
+confusion2 <- confusionMatrix(predictions2, test_data_scaled$extreme_bp, positive="TRUE")
+
+# Print confusion matrix
+print(confusion2)
+```
+
+## Plot the Decision Boundary (Base R Plot)
+
+### Define the Feature Space Grid
+
+We first define a grid over the feature space to compute decision values for plotting the decision boundary.
+
+```{r}
+# Define a grid over the feature space for plotting
+x_seq <- seq(min(train_data_scaled$height), max(train_data_scaled$height), length = 300)
+y_seq <- seq(min(train_data_scaled$weight), max(train_data_scaled$weight), length = 300)
+grid <- expand.grid(height = x_seq, weight = y_seq)
+```
+
+### Compute Decision Values
+
+Using the grid, we predict decision values with the trained SVM model.
+
+```{r}
+# Get decision values for the grid
+decision_values <- predict(svm_model2, grid, decision.values = TRUE)
+decision <- attr(decision_values, "decision.values")
+```
+
+### Plot the Data Points and Decision Boundary
+
+Here, we plot the training data points, support vectors, decision boundary, and margins.
+
+```{r}
+# Plot data points
+plot(train_data_scaled$height, train_data_scaled$weight, 
+     col = as.integer(train_data_scaled$extreme_bp) + 1, 
+     pch = 19, xlab = "Height (Scaled)", ylab = "Weight (Scaled)")
+
+# Highlight support vectors
+points(svm_model$SV, col = "blue", pch = 5, cex = 1.5)
+
+# Plot decision boundary and margins
+contour(x_seq, y_seq, matrix(decision, 300, 300), levels = c(-1, 0, 1), 
+        label = FALSE, add = TRUE, col = c("red", "black", "red"), 
+        lwd = 2, lty = c(2, 1, 2))
+
+# Add legend
+legend("topleft", 
+       legend = c("Extreme BP - FALSE", "Extreme BP - TRUE", 
+                  "Support Vectors", "Decision Boundary", "Margin"), 
+       col = c("red", "green", "blue", "black", "red"), 
+       pch = c(19, 19, 5, NA, NA), lty = c(NA, NA, NA, 1, 2), cex = 0.8)
+
+# Add title
+title("SVM Decision Boundary for Predicting Extreme Blood Pressure using Height and Weight")
+```
+
+------------------------------------------------------------------------
+
+## Plot the Decision Boundary (ggplot Plot)
+
+### Calculate Decision Boundary Slope and Intercept
+
+The decision boundary is derived from the SVM model's weight vector (`w`) and intercept.
+
+```{r}
+# Build weight vector
+w <- t(svm_model$coefs) %*% svm_model$SV
+
+# Calculate slope and intercept
+slope_1 <- -w[1] / w[2]
+intercept_1 <- svm_model$rho / w[2]
+```
+
+### Create ggplot Visualization
+
+We use `ggplot2` to plot the training data, support vectors, and decision boundary.
+
+```{r}
+# Basic scatter plot of the data
+p <- ggplot(data = train_data_scaled, aes(x = height, y = weight, colour = extreme_bp)) + 
+  geom_point() + 
+  scale_colour_manual(values = c("red", "blue"))
+
+# Identify support vectors in the training set
+df_sv <- train_data_scaled[svm_model$index, ]
+
+# Add support vectors
+p <- p + geom_point(data = df_sv, aes(x = height, y = weight), 
+                    colour = "purple", size = 4, alpha = 0.5, fill = NA, shape = 1) + 
+  scale_shape(solid = FALSE)
+
+# Add decision boundary
+p <- p + geom_abline(slope = slope_1, intercept = intercept_1)
+
+# Add margins (offset by 1/w[2])
+p <- p + geom_abline(slope = slope_1, intercept = intercept_1 - 1 / w[2], linetype = "dashed") + 
+  geom_abline(slope = slope_1, intercept = intercept_1 + 1 / w[2], linetype = "dashed")
+
+# Add Axes and Title
+p <- p + labs(x = "Height (Scaled)", y = "Weight (Scaled)", title="SVM Decision Boundary for Predicting Extreme Blood Pressure using Height and Weight")
+
+# Display plot
+p
+```
+
+------------------------------------------------------------------------
+
+# Conclusion
+
+In this tutorial, we trained and evaluated an SVM model to predict extreme blood pressure. The model achieved an accuracy of approximately **62%** with selected predictors. Feature selection and data preprocessing steps played a vital role in improving model performance.
