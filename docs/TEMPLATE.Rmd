@@ -1,0 +1,180 @@
+---
+title: "[Method Name] for Nutrition Research"
+author: "[Author Name]"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    fig_caption: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  message    = FALSE,
+  warning    = FALSE,
+  fig.width  = 7,
+  fig.height = 5,
+  fig.align  = "center"
+)
+
+# Shared random seed — set this once and pass it wherever randomness is needed
+SEED <- 42
+set.seed(SEED)
+```
+
+## Introduction
+
+<!--
+~200 words. Two paragraphs:
+1. What is [Method] and when would a nutrition researcher use it?
+2. What specific question are we answering with NHANES data in this tutorial?
+No subheadings in this section.
+-->
+
+[This tutorial demonstrates **[Method Name]** using data from the National Health
+and Nutrition Examination Survey (NHANES). We will predict [outcome] using
+[predictors], walking through each step from data loading to interpretation.]
+
+---
+
+## Setup
+
+```{r packages}
+suppressPackageStartupMessages({
+  library(tidyverse)   # Data manipulation and visualization
+  library(here)        # Reproducible file paths
+  # ADD METHOD-SPECIFIC PACKAGES BELOW, each with a comment:
+  # library(randomForest)  # Random forest models
+  # library(caret)         # Cross-validation and model evaluation
+})
+```
+
+---
+
+## Data
+
+```{r load-data}
+# Load NHANES data — tries GitHub URL first, falls back to local copy
+DATA_URL <- "https://raw.githubusercontent.com/m-powell/m-powell.github.io/master/MLforNutrition/data/nhanes_nutrition.csv"
+
+nhanes <- tryCatch(
+  read_csv(DATA_URL, show_col_types = FALSE),
+  error = function(e) {
+    message("Could not load from URL; falling back to local copy.")
+    read_csv(here::here("data", "nhanes_nutrition.csv"), show_col_types = FALSE)
+  }
+)
+
+# Quick inspection
+glimpse(nhanes)
+```
+
+<!--
+Briefly describe the dataset: relevant columns, time period, sample size.
+Describe any preprocessing steps BEFORE the code that performs them.
+-->
+
+```{r preprocess}
+# [Describe what preprocessing is happening and why before this chunk]
+
+nhanes_clean <- nhanes |>
+  drop_na(bp_sys, bp_di, age, bmi, kcal) |>
+  mutate(
+    extreme_bp = factor(extreme_bp, levels = c(FALSE, TRUE), labels = c("Normal", "Extreme"))
+  )
+
+cat(sprintf("Observations after cleaning: %d\n", nrow(nhanes_clean)))
+```
+
+---
+
+## Method
+
+<!--
+Break this section into level-3 subheadings. Suggested structure:
+  ### Model Setup and Hyperparameters
+  ### Fitting the Model
+  ### Evaluating Performance
+  ### Interpreting Results
+
+Before every code chunk, write a sentence or two explaining what you're doing and why.
+-->
+
+### Model Setup and Hyperparameters
+
+<!-- Explain the key hyperparameters conceptually before setting them. -->
+
+```{r model-setup}
+# [Hyperparameter setup code here]
+```
+
+### Fitting the Model
+
+```{r fit-model}
+set.seed(SEED)  # Always set seed immediately before model fitting
+
+# [Model fitting code here]
+```
+
+### Evaluating Performance
+
+```{r evaluate}
+# [Evaluation code here]
+```
+
+### Interpreting Results
+
+```{r visualize}
+# ---- Shared plot theme (use for every figure in this tutorial) ----
+theme_nutr <- function() {
+  theme_minimal(base_size = 13) +
+    theme(
+      plot.title       = element_text(size = 14, face = "bold"),
+      plot.subtitle    = element_text(size = 12, color = "gray40"),
+      plot.caption     = element_text(size = 10, color = "gray50", hjust = 0),
+      axis.title       = element_text(size = 12),
+      legend.position  = "bottom",
+      panel.grid.minor = element_blank()
+    )
+}
+# -------------------------------------------------------------------
+
+# [Visualization code here]
+# Caption format: "Figure N: [What is shown]. [One sentence interpretation]."
+```
+
+---
+
+## Results
+
+<!--
+1–2 paragraphs. Summarize what the model found in plain language.
+Keep it grounded in the nutrition/health context.
+-->
+
+---
+
+## Summary
+
+**Key takeaways:**
+
+- ...
+- ...
+- ...
+
+**Limitation:** [One sentence on when this method is not appropriate.]
+
+**See also:** The [Python companion tutorial](../python/[method]-python.html)
+covers the same analysis using scikit-learn.
+
+---
+
+```{r session-info, echo=FALSE}
+sessionInfo()
+```
