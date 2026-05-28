@@ -61,13 +61,13 @@ suppressPackageStartupMessages({
 
 ```{r load-data}
 # Load NHANES data — tries GitHub URL first, falls back to local copy
-DATA_URL <- "https://raw.githubusercontent.com/m-powell/m-powell.github.io/master/MLforNutrition/data/nhanes_nutrition.csv"
+DATA_URL <- "https://raw.githubusercontent.com/m-powell/MLforNutrition/master/data/MLforNutrition_NHANES.csv"
 
 nhanes <- tryCatch(
   read_csv(DATA_URL, show_col_types = FALSE),
   error = function(e) {
     message("Could not load from URL; falling back to local copy.")
-    read_csv(here::here("data", "nhanes_nutrition.csv"), show_col_types = FALSE)
+    read_csv(here::here("data", "MLforNutrition_NHANES.csv"), show_col_types = FALSE)
   }
 )
 

@@ -108,33 +108,33 @@ Every tutorial must follow this section order. Use these exact headings.
 ## 6. Data Loading Convention
 
 The NHANES dataset lives in two places:
-1. Bundled in this repo at `data/nhanes_nutrition.csv`
-2. Described in the [Obtaining NHANES Data](../tutorials/nhanes-data/) tutorial
+1. Bundled in this repo at `data/MLforNutrition_NHANES.csv`
+2. Assembled by the data generation notebook at `data/Redo of NHANES Data Pull.ipynb`
 
 All tutorials load data using this pattern:
 
 **R:**
 ```r
-DATA_URL <- "https://raw.githubusercontent.com/m-powell/m-powell.github.io/master/MLforNutrition/data/nhanes_nutrition.csv"
+DATA_URL <- "https://raw.githubusercontent.com/m-powell/MLforNutrition/master/data/MLforNutrition_NHANES.csv"
 
 nhanes <- tryCatch(
   read_csv(DATA_URL, show_col_types = FALSE),
   error = function(e) {
     message("Could not load from URL; falling back to local copy.")
-    read_csv(here::here("data", "nhanes_nutrition.csv"), show_col_types = FALSE)
+    read_csv(here::here("data", "MLforNutrition_NHANES.csv"), show_col_types = FALSE)
   }
 )
 ```
 
 **Python:**
 ```python
-DATA_URL = "https://raw.githubusercontent.com/m-powell/m-powell.github.io/master/MLforNutrition/data/nhanes_nutrition.csv"
+DATA_URL = "https://raw.githubusercontent.com/m-powell/MLforNutrition/master/data/MLforNutrition_NHANES.csv"
 
 try:
     nhanes = pd.read_csv(DATA_URL)
 except Exception:
     print("Could not load from URL; falling back to local copy.")
-    nhanes = pd.read_csv("../../data/nhanes_nutrition.csv")
+    nhanes = pd.read_csv("../../data/MLforNutrition_NHANES.csv")
 ```
 
 ---
