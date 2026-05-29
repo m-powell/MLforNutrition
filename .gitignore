@@ -18,3 +18,6 @@ env/
 
 # Jupyter
 .virtual_documents/
+
+# Raw downloaded XPT files (216 MB — too large for GitHub)
+data/nhanes_xpt_1999_2018/

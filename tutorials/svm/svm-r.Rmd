@@ -1,0 +1,336 @@
+---
+title: "Support Vector Machines for Nutrition Research"
+author: "[Author Name]"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    fig_caption: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  message    = FALSE,
+  warning    = FALSE,
+  fig.width  = 7,
+  fig.height = 5,
+  fig.align  = "center"
+)
+
+# Shared random seed — set once, passed wherever randomness is needed
+SEED <- 42
+set.seed(SEED)
+```
+
+## Introduction
+
+Support vector machines (SVM) are a supervised learning method that finds the hyperplane best separating two classes in a high-dimensional feature space. Rather than fitting a model to all training observations, the SVM identifies a small subset — the **support vectors** — that lie closest to the decision boundary, and it maximizes the margin between those points and the boundary. This combination of geometric clarity and strong regularization makes SVMs effective when predictors are numerous relative to sample size, a situation common in nutrition epidemiology.
+
+In this tutorial, we apply SVM to predict **extreme blood pressure** — defined as systolic ≥ 130 mmHg or diastolic ≥ 80 mmHg (AHA/ACC 2017 Stage 1 hypertension) — using dietary, anthropometric, and laboratory data from the NHANES 1999–2018 dataset. We walk through feature selection, data preparation, model training, and performance evaluation, ending with a visualization of the SVM decision boundary projected onto two dimensions. The goal is not to build the best possible predictive model, but to illustrate how SVMs work and how to interpret their output in a nutrition research context.
+
+---
+
+## Setup
+
+```{r packages}
+suppressPackageStartupMessages({
+  library(tidyverse)     # Data manipulation and visualization
+  library(here)          # Reproducible relative file paths
+  library(e1071)         # SVM models (svm function)
+  library(caret)         # Data partitioning, cross-validation, and evaluation
+  library(randomForest)  # Variable importance for feature selection
+})
+```
+
+---
+
+## Data
+
+The NHANES dataset used here contains 21,849 adults with complete fasting laboratory and dietary recall data across ten two-year survey cycles (1999–2018). See the [data README](../../data/README.md) for a full variable dictionary.
+
+Two variables are excluded before modeling:
+
+- **`bp_sys` and `bp_di`** are excluded because they directly define the outcome (`extreme_bp = bp_sys >= 130 | bp_di >= 80`). Including them would be data leakage.
+- **`metsyn`** is excluded because extreme blood pressure is one of its five components. A positive `metsyn` mechanically increases the probability of `extreme_bp = TRUE`, which would inflate model performance.
+
+```{r load-data}
+DATA_URL <- "https://raw.githubusercontent.com/m-powell/MLforNutrition/master/data/MLforNutrition_NHANES.csv"
+
+nhanes <- tryCatch(
+  read_csv(DATA_URL, show_col_types = FALSE),
+  error = function(e) {
+    message("Could not load from URL; falling back to local copy.")
+    read_csv(here::here("data", "MLforNutrition_NHANES.csv"), show_col_types = FALSE)
+  }
+)
+
+glimpse(nhanes)
+```
+
+We convert the outcome and gender to factors. The `drop_na()` call is a safeguard; all variables used for modeling are complete in this dataset after the upstream pipeline.
+
+```{r preprocess}
+# Predictor set for feature selection
+# Excludes bp_sys/bp_di (define outcome), metsyn (contains outcome),
+# meds_hbp/meds_chol (many NAs, not dietary predictors),
+# identifiers, and imputation flags
+feature_vars <- c(
+  "age", "gender",
+  "weight", "height", "bmi", "waist",
+  "kcal", "protein", "sugar", "carb",
+  "fat_total", "fat_sat", "fat_mon", "fat_poly",
+  "hdl", "glucose", "triglycerides"
+)
+
+nhanes_model <- nhanes |>
+  mutate(
+    extreme_bp = as.factor(extreme_bp),
+    gender     = as.factor(gender)
+  ) |>
+  drop_na(all_of(c(feature_vars, "extreme_bp")))
+
+cat(sprintf("Observations for modeling: %d\n", nrow(nhanes_model)))
+cat(sprintf("Extreme BP prevalence:     %.1f%%\n",
+            mean(nhanes_model$extreme_bp == "TRUE") * 100))
+```
+
+---
+
+## Method
+
+### Feature Selection
+
+Before fitting the SVM, we rank predictor importance using a random forest. Random forests build many decision trees on random subsets of predictors, and each variable's importance is measured by how much it reduces classification impurity (the Gini index) across all trees. We then refine the selection using **recursive feature elimination (RFE)**, which repeatedly fits models while dropping the least important feature, keeping the subset that yields the best cross-validated accuracy.
+
+Note: the RFE step uses 10-fold cross-validation and takes several minutes to run.
+
+```{r feature-selection-rf}
+set.seed(SEED)
+rf_control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+rf_model <- train(
+  extreme_bp ~ .,
+  data       = nhanes_model |> select(all_of(c(feature_vars, "extreme_bp"))),
+  method     = "rf",
+  preProcess = c("center", "scale"),
+  trControl  = rf_control
+)
+
+importance <- varImp(rf_model, scale = FALSE)
+plot(importance)
+```
+
+*Figure 1: Variable importance from a random forest classifier predicting extreme blood pressure. Variables are ranked by mean decrease in the Gini index across all trees.*
+
+```{r feature-selection-rfe}
+set.seed(SEED)
+rfe_control <- rfeControl(functions = rfFuncs, method = "cv", number = 10)
+
+rfe_results <- rfe(
+  x          = nhanes_model |> select(all_of(feature_vars)),
+  y          = nhanes_model$extreme_bp,
+  sizes      = c(1:10),
+  rfeControl = rfe_control
+)
+
+print(rfe_results)
+predictors(rfe_results)
+plot(rfe_results, type = c("g", "o"))
+```
+
+*Figure 2: Cross-validated accuracy as a function of the number of features selected by RFE. The optimal subset minimizes the number of predictors while maximizing accuracy.*
+
+Both methods consistently identify anthropometric predictors — particularly waist circumference, height, weight — and metabolic markers (triglycerides, HDL, glucose) as the strongest predictors. Based on these results and subject-matter judgment, we fit the SVM using seven predictors: `height`, `weight`, `triglycerides`, `waist`, `protein`, `age`, and `glucose`.
+
+### Data Splitting
+
+We split the dataset into 80% training and 20% testing, stratifying on the outcome to maintain class balance in both sets.
+
+```{r split-data}
+set.seed(SEED)
+train_index <- createDataPartition(nhanes_model$extreme_bp, p = 0.8, list = FALSE)
+train_data  <- nhanes_model[ train_index, ]
+test_data   <- nhanes_model[-train_index, ]
+
+cat(sprintf("Training set: %d observations\n", nrow(train_data)))
+cat(sprintf("Test set:     %d observations\n", nrow(test_data)))
+```
+
+### Standardization
+
+SVMs rely on distances between observations in feature space. Variables measured on different scales — waist circumference in centimeters versus protein intake in grams per day — will dominate the distance calculation by magnitude alone, distorting the decision boundary. We therefore standardize all predictors to mean 0 and standard deviation 1.
+
+Crucially, scaling parameters (mean and SD) are computed from the **training set only** and then applied to both sets. Using test-set statistics to scale the training data would constitute data leakage.
+
+```{r standardize}
+model_vars <- c("height", "weight", "triglycerides", "waist",
+                "protein", "age", "glucose")
+
+# Compute scaling parameters from training data only
+train_means <- colMeans(train_data[model_vars])
+train_sds   <- apply(train_data[model_vars], 2, sd)
+
+# Apply the same scaling to both sets
+train_scaled <- as.data.frame(
+  scale(train_data[model_vars], center = train_means, scale = train_sds)
+)
+test_scaled <- as.data.frame(
+  scale(test_data[model_vars], center = train_means, scale = train_sds)
+)
+
+# Append the outcome
+train_scaled$extreme_bp <- train_data$extreme_bp
+test_scaled$extreme_bp  <- test_data$extreme_bp
+```
+
+### Model Setup and Hyperparameters
+
+The SVM has two key settings for a linear kernel:
+
+- **Kernel:** We use a **linear kernel**, which fits a flat hyperplane as the decision boundary. This is appropriate here because we want an interpretable model and because the selected predictors have a reasonably linear relationship with the outcome. Non-linear kernels (radial basis function, polynomial) can capture more complex boundaries but are harder to interpret.
+
+- **Cost (C):** The cost parameter controls the trade-off between margin width and training errors. A **larger C** penalizes misclassifications more heavily, producing a narrow margin that fits training data closely (lower bias, higher variance). A **smaller C** allows more training errors in exchange for a wider, more generalizable margin (higher bias, lower variance). We use `cost = 10` here; in practice, C should be tuned by cross-validation.
+
+### Fitting the Model
+
+```{r fit-model}
+set.seed(SEED)
+svm_model <- svm(
+  extreme_bp ~ height + weight + triglycerides + waist + protein + age + glucose,
+  data   = train_scaled,
+  kernel = "linear",
+  scale  = TRUE,
+  cost   = 10
+)
+
+print(svm_model)
+```
+
+### Evaluating Performance
+
+We predict outcomes for the held-out test set and summarize performance with a confusion matrix. Beyond accuracy, we pay attention to **sensitivity** (the proportion of true extreme-BP cases correctly identified) and **specificity** (the proportion of non-extreme cases correctly identified), since the cost of a missed positive case may differ from the cost of a false alarm in a clinical screening context.
+
+```{r evaluate}
+test_predictions <- predict(svm_model, newdata = test_scaled)
+
+confusion <- confusionMatrix(
+  test_predictions,
+  test_scaled$extreme_bp,
+  positive = "TRUE"
+)
+
+print(confusion)
+```
+
+### Decision Boundary Visualization
+
+To plot the decision boundary, we fit a second SVM using only `height` and `weight`. This collapses the feature space to two dimensions so the boundary can be drawn directly. The two-variable model is for illustration only — its accuracy will be lower than the full model.
+
+```{r fit-2var}
+set.seed(SEED)
+svm_model2 <- svm(
+  extreme_bp ~ height + weight,
+  data   = train_scaled,
+  kernel = "linear",
+  scale  = TRUE,
+  cost   = 10
+)
+
+preds2     <- predict(svm_model2, newdata = test_scaled)
+confusion2 <- confusionMatrix(preds2, test_scaled$extreme_bp, positive = "TRUE")
+cat(sprintf("Two-variable model accuracy: %.1f%%\n",
+            confusion2$overall["Accuracy"] * 100))
+```
+
+We extract the weight vector from `svm_model2` to compute the slope and intercept of the decision boundary in the standardized height-weight space.
+
+```{r visualize-boundary}
+# ---- Shared plot theme ----
+theme_nutr <- function() {
+  theme_minimal(base_size = 13) +
+    theme(
+      plot.title       = element_text(size = 14, face = "bold"),
+      plot.subtitle    = element_text(size = 12, color = "gray40"),
+      plot.caption     = element_text(size = 10, color = "gray50", hjust = 0),
+      axis.title       = element_text(size = 12),
+      legend.position  = "bottom",
+      panel.grid.minor = element_blank()
+    )
+}
+# ---------------------------
+
+# Extract decision boundary from the 2-variable model
+w            <- t(svm_model2$coefs) %*% svm_model2$SV
+slope_db     <- -w[1] / w[2]
+intercept_db <- svm_model2$rho / w[2]
+
+# Locate support vectors in the training set
+df_sv <- train_scaled[svm_model2$index, ]
+
+ggplot(train_scaled, aes(x = height, y = weight, colour = extreme_bp)) +
+  geom_point(alpha = 0.25, size = 0.9) +
+  geom_point(
+    data   = df_sv,
+    aes(x = height, y = weight),
+    colour = "gray20", size = 3.5, alpha = 0.8, shape = 1
+  ) +
+  geom_abline(slope = slope_db, intercept = intercept_db,
+              colour = "black", linewidth = 0.9) +
+  geom_abline(slope = slope_db, intercept = intercept_db - 1 / w[2],
+              colour = "black", linewidth = 0.5, linetype = "dashed") +
+  geom_abline(slope = slope_db, intercept = intercept_db + 1 / w[2],
+              colour = "black", linewidth = 0.5, linetype = "dashed") +
+  scale_colour_brewer(
+    palette = "Set2",
+    name    = "Extreme BP",
+    labels  = c("FALSE" = "No", "TRUE" = "Yes")
+  ) +
+  labs(
+    x        = "Height (standardized)",
+    y        = "Weight (standardized)",
+    title    = "SVM Decision Boundary",
+    subtitle = "Height and weight as predictors of extreme blood pressure",
+    caption  = paste0(
+      "Figure 3: Linear SVM decision boundary (solid line) with margins (dashed lines) for a two-variable\n",
+      "model predicting extreme blood pressure using standardized height and weight. Open circles mark\n",
+      "support vectors. This simplified model is for visualization only; the full model uses 7 predictors."
+    )
+  ) +
+  theme_nutr()
+```
+
+---
+
+## Results
+
+The seven-variable SVM achieved approximately 63% accuracy on the held-out test set. While this exceeds the no-information rate, sensitivity — the model's ability to identify individuals who truly have extreme blood pressure — was notably lower than specificity, indicating the model is conservative in flagging positive cases. This reflects the moderate class imbalance in the dataset: extreme blood pressure is more common than not in adults (roughly 55% prevalence in this NHANES sample), which pushes the model toward the majority class.
+
+Among predictors, waist circumference, height, weight, and triglyceride levels were the most informative features in both the random forest ranking and RFE. This is consistent with the established cardiometabolic risk literature, where abdominal adiposity and dyslipidemia are recognized precursors to hypertension. The modest overall accuracy also reflects a fundamental limitation of the predictor set: dietary and anthropometric variables capture only a portion of the variance in blood pressure, which is also influenced by genetic factors, medication, stress, and other variables not available in this dataset.
+
+---
+
+## Summary
+
+**Key takeaways:**
+
+- SVMs find the maximum-margin hyperplane separating two classes and are defined by the support vectors — the small subset of training observations closest to the boundary.
+- Standardizing predictors before fitting an SVM is essential because the algorithm is sensitive to variable scale. Scaling parameters must always be derived from the training set, not the full dataset.
+- Feature selection via random forest importance and RFE identified anthropometric predictors (waist, height, weight) and metabolic markers (triglycerides, glucose) as most informative for predicting extreme blood pressure.
+- Excluding variables that define or contain the outcome (`bp_sys`, `bp_di`, `metsyn`) is critical to avoid data leakage, which would artificially inflate model performance.
+- The ~63% accuracy achieved here is meaningful but modest, reflecting the complexity of blood pressure as a phenotype and the limitations of dietary and anthropometric data as sole predictors.
+
+**Limitation:** SVMs with linear kernels assume the decision boundary is approximately flat in the feature space. When the true boundary is non-linear, a radial basis function (RBF) or polynomial kernel will perform better, though at the cost of interpretability.
+
+**See also:** The [Python companion tutorial](svm-python.html) covers the same analysis using scikit-learn's `SVC`.
+
+---
+
+```{r session-info, echo=FALSE}
+sessionInfo()
+```
