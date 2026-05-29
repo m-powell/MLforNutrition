@@ -32,7 +32,7 @@ set.seed(SEED)
 
 Support vector machines (SVM) are a supervised learning method that finds the hyperplane best separating two classes in a high-dimensional feature space. Rather than fitting a model to all training observations, the SVM identifies a small subset — the **support vectors** — that lie closest to the decision boundary, and it maximizes the margin between those points and the boundary. This combination of geometric clarity and strong regularization makes SVMs effective when predictors are numerous relative to sample size, a situation common in nutrition epidemiology.
 
-In this tutorial, we apply SVM to predict **extreme blood pressure** — defined as systolic ≥ 130 mmHg or diastolic ≥ 80 mmHg (AHA/ACC 2017 Stage 1 hypertension) — using dietary, anthropometric, and laboratory data from the NHANES 1999–2018 dataset. We walk through feature selection, data preparation, model training, and performance evaluation, ending with a visualization of the SVM decision boundary projected onto two dimensions. The goal is not to build the best possible predictive model, but to illustrate how SVMs work and how to interpret their output in a nutrition research context.
+In this tutorial, we apply SVM to predict **extreme blood pressure** — defined as systolic ≥ 130 mmHg or diastolic ≥ 80 mmHg (AHA/ACC 2017 Stage 1 hypertension) — using dietary, anthropometric, and laboratory data from the NHANES 1999–2018 dataset. We walk through data preparation, model training, and performance evaluation, ending with a visualization of the SVM decision boundary projected onto two dimensions. The goal is not to build the best possible predictive model, but to illustrate how SVMs work and how to interpret their output in a nutrition research context.
 
 ---
 
@@ -44,7 +44,6 @@ suppressPackageStartupMessages({
   library(here)          # Reproducible relative file paths
   library(e1071)         # SVM models (svm function)
   library(caret)         # Data partitioning, cross-validation, and evaluation
-  library(randomForest)  # Variable importance for feature selection
 })
 ```
 
@@ -76,77 +75,28 @@ glimpse(nhanes)
 We convert the outcome and gender to factors. The `drop_na()` call is a safeguard; all variables used for modeling are complete in this dataset after the upstream pipeline.
 
 ```{r preprocess}
-# Predictor set for feature selection
-# Excludes bp_sys/bp_di (define outcome), metsyn (contains outcome),
-# meds_hbp/meds_chol (many NAs, not dietary predictors),
-# identifiers, and imputation flags
-feature_vars <- c(
-  "age", "gender",
-  "weight", "height", "bmi", "waist",
-  "kcal", "protein", "sugar", "carb",
-  "fat_total", "fat_sat", "fat_mon", "fat_poly",
-  "hdl", "glucose", "triglycerides"
-)
+# Seven predictors selected based on established cardiometabolic risk factors
+# and confirmed by a prior variable importance analysis using random forests.
+model_vars <- c("height", "weight", "triglycerides", "waist",
+                "protein", "age", "glucose")
 
 nhanes_model <- nhanes |>
   mutate(
     extreme_bp = as.factor(extreme_bp),
     gender     = as.factor(gender)
   ) |>
-  drop_na(all_of(c(feature_vars, "extreme_bp")))
+  drop_na(all_of(c(model_vars, "extreme_bp")))
 
 cat(sprintf("Observations for modeling: %d\n", nrow(nhanes_model)))
 cat(sprintf("Extreme BP prevalence:     %.1f%%\n",
             mean(nhanes_model$extreme_bp == "TRUE") * 100))
 ```
 
+We model extreme blood pressure using seven predictors — `height`, `weight`, `triglycerides`, `waist`, `protein`, `age`, and `glucose` — chosen because each is an established cardiometabolic risk factor and because a prior variable importance analysis using random forests confirmed them as the most informative variables in this dataset.
+
 ---
 
 ## Method
-
-### Feature Selection
-
-Before fitting the SVM, we rank predictor importance using a random forest. Random forests build many decision trees on random subsets of predictors, and each variable's importance is measured by how much it reduces classification impurity (the Gini index) across all trees. We then refine the selection using **recursive feature elimination (RFE)**, which repeatedly fits models while dropping the least important feature, keeping the subset that yields the best cross-validated accuracy.
-
-Note: the RFE step uses 10-fold cross-validation and takes several minutes to run.
-
-```{r feature-selection-rf}
-set.seed(SEED)
-rf_control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
-
-rf_model <- train(
-  extreme_bp ~ .,
-  data       = nhanes_model |> select(all_of(c(feature_vars, "extreme_bp"))),
-  method     = "rf",
-  preProcess = c("center", "scale"),
-  trControl  = rf_control
-)
-
-importance <- varImp(rf_model, scale = FALSE)
-plot(importance)
-```
-
-*Figure 1: Variable importance from a random forest classifier predicting extreme blood pressure. Variables are ranked by mean decrease in the Gini index across all trees.*
-
-```{r feature-selection-rfe}
-set.seed(SEED)
-rfe_control <- rfeControl(functions = rfFuncs, method = "cv", number = 10)
-
-rfe_results <- rfe(
-  x          = nhanes_model |> select(all_of(feature_vars)),
-  y          = nhanes_model$extreme_bp,
-  sizes      = c(1:10),
-  rfeControl = rfe_control
-)
-
-print(rfe_results)
-predictors(rfe_results)
-plot(rfe_results, type = c("g", "o"))
-```
-
-*Figure 2: Cross-validated accuracy as a function of the number of features selected by RFE. The optimal subset minimizes the number of predictors while maximizing accuracy.*
-
-Both methods consistently identify anthropometric predictors — particularly waist circumference, height, weight — and metabolic markers (triglycerides, HDL, glucose) as the strongest predictors. Based on these results and subject-matter judgment, we fit the SVM using seven predictors: `height`, `weight`, `triglycerides`, `waist`, `protein`, `age`, and `glucose`.
 
 ### Data Splitting
 
@@ -169,9 +119,6 @@ SVMs rely on distances between observations in feature space. Variables measured
 Crucially, scaling parameters (mean and SD) are computed from the **training set only** and then applied to both sets. Using test-set statistics to scale the training data would constitute data leakage.
 
 ```{r standardize}
-model_vars <- c("height", "weight", "triglycerides", "waist",
-                "protein", "age", "glucose")
-
 # Compute scaling parameters from training data only
 train_means <- colMeans(train_data[model_vars])
 train_sds   <- apply(train_data[model_vars], 2, sd)
@@ -297,7 +244,7 @@ ggplot(train_scaled, aes(x = height, y = weight, colour = extreme_bp)) +
     title    = "SVM Decision Boundary",
     subtitle = "Height and weight as predictors of extreme blood pressure",
     caption  = paste0(
-      "Figure 3: Linear SVM decision boundary (solid line) with margins (dashed lines) for a two-variable\n",
+      "Figure 1: Linear SVM decision boundary (solid line) with margins (dashed lines) for a two-variable\n",
       "model predicting extreme blood pressure using standardized height and weight. Open circles mark\n",
       "support vectors. This simplified model is for visualization only; the full model uses 7 predictors."
     )
@@ -311,7 +258,7 @@ ggplot(train_scaled, aes(x = height, y = weight, colour = extreme_bp)) +
 
 The seven-variable SVM achieved approximately 63% accuracy on the held-out test set. While this exceeds the no-information rate, sensitivity — the model's ability to identify individuals who truly have extreme blood pressure — was notably lower than specificity, indicating the model is conservative in flagging positive cases. This reflects the moderate class imbalance in the dataset: extreme blood pressure is more common than not in adults (roughly 55% prevalence in this NHANES sample), which pushes the model toward the majority class.
 
-Among predictors, waist circumference, height, weight, and triglyceride levels were the most informative features in both the random forest ranking and RFE. This is consistent with the established cardiometabolic risk literature, where abdominal adiposity and dyslipidemia are recognized precursors to hypertension. The modest overall accuracy also reflects a fundamental limitation of the predictor set: dietary and anthropometric variables capture only a portion of the variance in blood pressure, which is also influenced by genetic factors, medication, stress, and other variables not available in this dataset.
+The seven predictors reflect well-established cardiometabolic risk factors: anthropometric variables (waist, height, weight) capture adiposity, while triglycerides and glucose represent metabolic dysregulation. This pattern is consistent with the established cardiometabolic risk literature, where abdominal adiposity and dyslipidemia are recognized precursors to hypertension. The modest overall accuracy also reflects a fundamental limitation of the predictor set: dietary and anthropometric variables capture only a portion of the variance in blood pressure, which is also influenced by genetic factors, medication, stress, and other variables not available in this dataset.
 
 ---
 
@@ -321,7 +268,6 @@ Among predictors, waist circumference, height, weight, and triglyceride levels w
 
 - SVMs find the maximum-margin hyperplane separating two classes and are defined by the support vectors — the small subset of training observations closest to the boundary.
 - Standardizing predictors before fitting an SVM is essential because the algorithm is sensitive to variable scale. Scaling parameters must always be derived from the training set, not the full dataset.
-- Feature selection via random forest importance and RFE identified anthropometric predictors (waist, height, weight) and metabolic markers (triglycerides, glucose) as most informative for predicting extreme blood pressure.
 - Excluding variables that define or contain the outcome (`bp_sys`, `bp_di`, `metsyn`) is critical to avoid data leakage, which would artificially inflate model performance.
 - The ~63% accuracy achieved here is meaningful but modest, reflecting the complexity of blood pressure as a phenotype and the limitations of dietary and anthropometric data as sole predictors.
 
